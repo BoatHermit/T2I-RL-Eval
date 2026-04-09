@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import types
 from contextlib import nullcontext
 from dataclasses import dataclass, asdict
 from pathlib import Path
@@ -122,11 +123,27 @@ class JanusProRunner:
             if module.__class__.__name__ == "Upsample" and hasattr(module, "with_conv"):
                 module.forward = _patched_forward.__get__(module, module.__class__)
 
+    def _ensure_prepare_inputs_for_generation(self) -> None:
+        if self.model is None or hasattr(self.model, "prepare_inputs_for_generation"):
+            return
+
+        def _prepare_inputs_for_generation(module_self, input_ids=None, **kwargs):
+            payload = dict(kwargs)
+            if input_ids is not None:
+                payload["input_ids"] = input_ids
+            return payload
+
+        self.model.prepare_inputs_for_generation = types.MethodType(
+            _prepare_inputs_for_generation,
+            self.model,
+        )
+
     def enable_lora(self, lora_path: str, scale: float = 1.0) -> None:
         from peft import PeftModel
 
         if self.model is None:
             raise RuntimeError("Model not loaded")
+        self._ensure_prepare_inputs_for_generation()
         self.model = PeftModel.from_pretrained(self.model, lora_path)
         if hasattr(self.model, "set_adapter"):
             try:
