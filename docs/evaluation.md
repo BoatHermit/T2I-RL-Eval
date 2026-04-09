@@ -15,6 +15,7 @@ The repository now includes converted manifests built from official benchmark me
 - GenAI-Bench raw source files: `data/evaluation/genai_bench/raw/genai_image.json`, `data/evaluation/genai_bench/raw/genai_skills.json`
 - Default LoRA directory: `artifacts/lora/grpo_siliconflow_quick_final`
 - Generated images: `outputs/evaluation/images/<benchmark>/<variant>/<sample_id>.png`
+- Extra candidates for the same prompt, when enabled: `outputs/evaluation/images/<benchmark>/<variant>/<sample_id>_01.png`
 - Result JSONL: `outputs/evaluation/results/<benchmark>/<variant>.jsonl`
 - Reports: `outputs/evaluation/reports/`
 
@@ -26,7 +27,7 @@ The repository now includes converted manifests built from official benchmark me
 
 ## Commands
 
-Generate baseline images:
+Generate baseline images with 4 prompts per forward batch:
 
 ```bash
 python scripts/generate_benchmark_images.py \
@@ -34,8 +35,12 @@ python scripts/generate_benchmark_images.py \
   --variant before \
   --manifest_path data/evaluation/tifa/samples.jsonl \
   --limit 20 \
+  --prompt_batch_size 4 \
   --output_dir outputs/evaluation
 ```
+
+`--prompt_batch_size 4` means one forward pass handles 4 different prompts from the dataset.
+This is the throughput-oriented batching knob for Colab runs.
 
 Generate LoRA images:
 

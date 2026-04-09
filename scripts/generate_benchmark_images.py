@@ -31,6 +31,7 @@ class GenerationConfig:
     height: int = 384
     width: int = 384
     num_images_per_prompt: int = 1
+    prompt_batch_size: int = 1
     seed: Optional[int] = None
     temperature: float = 1.0
 
@@ -39,8 +40,15 @@ def default_lora_path() -> Path:
     return Path(__file__).resolve().parents[1] / "artifacts" / "lora" / "grpo_siliconflow_quick_final"
 
 
-def build_image_path(output_dir: Path, benchmark: str, variant: str, sample_id: str) -> Path:
-    return Path(output_dir) / "images" / benchmark / variant / f"{sample_id}.png"
+def build_image_path(
+    output_dir: Path,
+    benchmark: str,
+    variant: str,
+    sample_id: str,
+    image_index: int = 0,
+) -> Path:
+    suffix = "" if image_index == 0 else f"_{image_index:02d}"
+    return Path(output_dir) / "images" / benchmark / variant / f"{sample_id}{suffix}.png"
 
 
 def should_skip_sample(target_path: Path, resume: bool) -> bool:
@@ -165,45 +173,58 @@ class JanusProRunner:
             if torch.cuda.is_available():
                 torch.cuda.manual_seed_all(config.seed)
         images: List[Image.Image] = []
-        for single_prompt in prompt:
+        batch_size = max(1, config.prompt_batch_size)
+        for start_idx in range(0, len(prompt), batch_size):
+            prompt_batch = prompt[start_idx : start_idx + batch_size]
             images.extend(
-                self._generate_single(
-                    prompt=single_prompt,
+                self._generate_batch(
+                    prompts=prompt_batch,
                     temperature=config.temperature,
                     cfg_weight=config.guidance_scale,
-                    parallel_size=config.num_images_per_prompt,
                 )
             )
         return images
 
     @torch.inference_mode()
-    def _generate_single(
+    def _generate_batch(
         self,
-        prompt: str,
+        prompts: List[str],
         temperature: float = 1.0,
-        parallel_size: int = 1,
         cfg_weight: float = 5.0,
     ) -> List[Image.Image]:
-        conversation = [
-            {"role": "<|User|>", "content": prompt},
-            {"role": "<|Assistant|>", "content": ""},
-        ]
-        sft_format = self.vl_chat_processor.apply_sft_template_for_multi_turn_prompts(
-            conversations=conversation,
-            sft_format=self.vl_chat_processor.sft_format,
-            system_prompt="",
-        )
-        formatted_prompt = sft_format + self.vl_chat_processor.image_start_tag
-        input_ids = torch.LongTensor(self.tokenizer.encode(formatted_prompt))
-        tokens = torch.zeros((parallel_size * 2, len(input_ids)), dtype=torch.int).to(self.device)
-        for idx in range(parallel_size * 2):
-            tokens[idx, :] = input_ids
-            if idx % 2 != 0:
-                tokens[idx, 1:-1] = self.vl_chat_processor.pad_id
+        encoded_prompts: List[torch.Tensor] = []
+        for prompt in prompts:
+            conversation = [
+                {"role": "<|User|>", "content": prompt},
+                {"role": "<|Assistant|>", "content": ""},
+            ]
+            sft_format = self.vl_chat_processor.apply_sft_template_for_multi_turn_prompts(
+                conversations=conversation,
+                sft_format=self.vl_chat_processor.sft_format,
+                system_prompt="",
+            )
+            formatted_prompt = sft_format + self.vl_chat_processor.image_start_tag
+            encoded_prompts.append(torch.LongTensor(self.tokenizer.encode(formatted_prompt)))
+
+        batch_size = len(encoded_prompts)
+        max_len = max(ids.shape[0] for ids in encoded_prompts)
+        pad_id = self.vl_chat_processor.pad_id
+        tokens = torch.full((batch_size * 2, max_len), pad_id, dtype=torch.int, device=self.device)
+
+        for prompt_idx, input_ids in enumerate(encoded_prompts):
+            seq_len = input_ids.shape[0]
+            start_col = max_len - seq_len
+            cond_row = prompt_idx * 2
+            uncond_row = cond_row + 1
+            tokens[cond_row, start_col:] = input_ids.to(self.device)
+            tokens[uncond_row, start_col:] = input_ids.to(self.device)
+            if seq_len > 2:
+                tokens[uncond_row, start_col + 1 : max_len - 1] = pad_id
+
         inputs_embeds = self.model.language_model.get_input_embeddings()(tokens)
         compute_dtype = torch.float16 if self.device.startswith("cuda") else self.dtype
         inputs_embeds = inputs_embeds.to(compute_dtype)
-        generated_tokens = torch.zeros((parallel_size, self.image_token_num_per_image), dtype=torch.int).to(self.device)
+        generated_tokens = torch.zeros((batch_size, self.image_token_num_per_image), dtype=torch.int).to(self.device)
         past_key_values = None
         autocast_ctx = torch.autocast(device_type="cuda", dtype=compute_dtype) if self.device.startswith("cuda") else nullcontext()
         with autocast_ctx:
@@ -225,7 +246,7 @@ class JanusProRunner:
                 next_token = torch.cat([next_token.unsqueeze(dim=1), next_token.unsqueeze(dim=1)], dim=1).view(-1)
                 img_embeds = self.model.prepare_gen_img_embeds(next_token)
                 inputs_embeds = img_embeds.unsqueeze(dim=1).to(compute_dtype)
-        return self._decode_tokens_to_images(generated_tokens, parallel_size)
+        return self._decode_tokens_to_images(generated_tokens, batch_size)
 
     def _decode_tokens_to_images(self, generated_tokens: torch.Tensor, parallel_size: int) -> List[Image.Image]:
         compute_dtype = torch.float16 if self.device.startswith("cuda") else self.dtype
@@ -257,6 +278,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--load_in_8bit", action="store_true")
     parser.add_argument("--guidance_scale", type=float, default=5.0)
     parser.add_argument("--num_inference_steps", type=int, default=50)
+    parser.add_argument("--num_images_per_prompt", type=int, default=1)
+    parser.add_argument("--prompt_batch_size", type=int, default=1)
     return parser.parse_args()
 
 
@@ -275,8 +298,15 @@ def save_generated_sample(
     generation_config: GenerationConfig,
     model_name: str,
     checkpoint_or_lora: str,
+    image_index: int = 0,
 ) -> Path:
-    image_path = build_image_path(output_dir, benchmark, variant, sample["sample_id"])
+    image_path = build_image_path(
+        output_dir,
+        benchmark,
+        variant,
+        sample["sample_id"],
+        image_index=image_index,
+    )
     image_path.parent.mkdir(parents=True, exist_ok=True)
     image.save(image_path)
     record = GeneratedSampleRecord(
@@ -288,7 +318,10 @@ def save_generated_sample(
         model_name=model_name,
         checkpoint_or_lora=checkpoint_or_lora,
         image_path=str(image_path),
-        generation_config=asdict(generation_config),
+        generation_config={
+            **asdict(generation_config),
+            "image_index": image_index,
+        },
     )
     append_jsonl(output_dir / "results" / "generated_samples.jsonl", record.to_dict())
     return image_path
@@ -323,23 +356,33 @@ def run() -> None:
     generation_config = GenerationConfig(
         num_inference_steps=args.num_inference_steps,
         guidance_scale=args.guidance_scale,
+        num_images_per_prompt=1,
+        prompt_batch_size=args.prompt_batch_size,
         seed=args.seed,
     )
+    pending_samples = []
     for sample in samples:
         image_path = build_image_path(output_dir, args.benchmark, args.variant, sample["sample_id"])
         if should_skip_sample(image_path, args.resume):
             continue
-        images = generator.generate(sample["prompt"], generation_config)
-        save_generated_sample(
-            output_dir=output_dir,
-            benchmark=args.benchmark,
-            variant=args.variant,
-            sample=sample,
-            image=images[0],
-            generation_config=generation_config,
-            model_name=args.base_model,
-            checkpoint_or_lora=str(args.lora_path or default_lora_path()) if args.variant == "after" else "base",
-        )
+        pending_samples.append(sample)
+
+    batch_size = max(1, args.prompt_batch_size)
+    for start_idx in range(0, len(pending_samples), batch_size):
+        sample_batch = pending_samples[start_idx : start_idx + batch_size]
+        prompts = [sample["prompt"] for sample in sample_batch]
+        images = generator.generate(prompts, generation_config)
+        for sample, image in zip(sample_batch, images):
+            save_generated_sample(
+                output_dir=output_dir,
+                benchmark=args.benchmark,
+                variant=args.variant,
+                sample=sample,
+                image=image,
+                generation_config=generation_config,
+                model_name=args.base_model,
+                checkpoint_or_lora=str(args.lora_path or default_lora_path()) if args.variant == "after" else "base",
+            )
 
 
 if __name__ == "__main__":

@@ -11,6 +11,11 @@ def test_generation_path_uses_variant_and_sample_id(tmp_path: Path):
     assert path == tmp_path / "images" / "tifa" / "after" / "tifa-0001.png"
 
 
+def test_generation_path_uses_index_suffix_for_extra_candidates(tmp_path: Path):
+    path = build_image_path(tmp_path, "tifa", "after", "tifa-0001", image_index=3)
+    assert path == tmp_path / "images" / "tifa" / "after" / "tifa-0001_03.png"
+
+
 def test_should_skip_existing_image_when_resume(tmp_path: Path):
     target = tmp_path / "images" / "tifa" / "before" / "tifa-0001.png"
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -114,4 +119,3 @@ def test_requirements_include_api_and_image_dependencies():
     assert "openai" in requirements
     assert "Pillow" in requirements
     assert "torch" in requirements
-
