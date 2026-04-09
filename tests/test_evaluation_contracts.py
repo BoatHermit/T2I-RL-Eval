@@ -56,18 +56,20 @@ def test_tifa_manifest_loads_seed_samples():
     benchmark = TIFABenchmark()
     samples = benchmark.iter_samples()
 
-    assert len(samples) >= 2
-    assert samples[0]["sample_id"] == "tifa-0001"
-    assert samples[0]["questions"][0]["question_type"] == "attribute"
+    assert len(samples) >= 4000
+    assert samples[0]["source"] == "tifa_v1.0"
+    assert sum(len(sample["questions"]) for sample in samples) >= 25000
+    assert samples[0]["questions"][0]["question_type"] in {"object", "attribute", "count", "relation", "other"}
 
 
 def test_genai_manifest_loads_seed_samples():
     benchmark = GenAIBenchmark()
     samples = benchmark.iter_samples()
 
-    assert len(samples) >= 2
-    assert samples[0]["sample_id"] == "genai-0001"
-    assert samples[0]["skills"] == ["counting", "attribute_binding"]
+    assert len(samples) == 1600
+    assert samples[0]["source"] == "GenAI-Bench-1600"
+    assert isinstance(samples[0]["skills"], list)
+    assert "reference_models" in samples[0]
 
 
 def test_manifest_validation_rejects_missing_fields(tmp_path: Path):
