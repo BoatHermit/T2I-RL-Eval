@@ -37,6 +37,8 @@ CLI flags still take precedence:
 
 - `--judge_model`
 - `--base_url`
+- `--max_workers`
+- `--log_every`
 
 ## Commands
 
@@ -78,6 +80,8 @@ python scripts/run_tifa.py \
   --manifest_path data/evaluation/tifa/samples.jsonl \
   --images_root outputs/evaluation/images \
   --variant before \
+  --max_workers 4 \
+  --log_every 20 \
   --output_path outputs/evaluation/results/tifa_before.jsonl
 ```
 
@@ -88,6 +92,8 @@ python scripts/run_genai_bench.py \
   --manifest_path data/evaluation/genai_bench/samples.jsonl \
   --images_root outputs/evaluation/images \
   --variant after \
+  --max_workers 4 \
+  --log_every 20 \
   --output_path outputs/evaluation/results/genai_after.jsonl
 ```
 
@@ -116,4 +122,6 @@ python scripts/summarize_evaluation.py \
 
 - The evaluation scripts are resumable through `--resume`.
 - The scoring scripts use API judges and keep per-sample error metadata.
+- The scoring scripts support sample-level concurrency with `--max_workers`.
+- Progress logs report total pending items, periodic completion counts, and elapsed time.
 - Only the inference-required LoRA files are stored in this repository.
