@@ -25,6 +25,19 @@ The repository now includes converted manifests built from official benchmark me
 - `raw/` keeps upstream official metadata for provenance and future re-conversion.
 - Full before/after evaluation over all official prompts is expensive on Colab. Use `--limit` for smoke runs, then scale up selectively.
 
+## Judge Configuration
+
+The scoring scripts support OpenAI-compatible API settings through environment variables:
+
+- `OPENAI_API_KEY`: API key for the judge endpoint
+- `OPENAI_BASE_URL`: base URL for an OpenAI-compatible endpoint
+- `JUDGE_MODEL`: model name used by `run_tifa.py` and `run_genai_bench.py`
+
+CLI flags still take precedence:
+
+- `--judge_model`
+- `--base_url`
+
 ## Commands
 
 Generate baseline images with 4 prompts per forward batch:
@@ -57,6 +70,10 @@ python scripts/generate_benchmark_images.py \
 Run TIFA judge:
 
 ```bash
+export OPENAI_API_KEY="your-api-key"
+export OPENAI_BASE_URL="https://api.openai.com/v1"
+export JUDGE_MODEL="gpt-4.1-mini"
+
 python scripts/run_tifa.py \
   --manifest_path data/evaluation/tifa/samples.jsonl \
   --images_root outputs/evaluation/images \

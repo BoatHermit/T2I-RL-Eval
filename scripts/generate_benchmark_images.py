@@ -78,7 +78,7 @@ class JanusProRunner:
         self.patch_size = 16
 
     def load_model(self) -> None:
-        from transformers import AutoModelForCausalLM, AutoProcessor, BitsAndBytesConfig
+        from transformers import AutoModelForCausalLM, BitsAndBytesConfig
 
         quantization_config = None
         if self.load_in_4bit:
@@ -93,10 +93,32 @@ class JanusProRunner:
 
         try:
             from janus.models import VLChatProcessor
+        except Exception as exc:
+            raise RuntimeError(
+                "Failed to import Janus VLChatProcessor. Janus text-to-image generation requires "
+                "the official DeepSeek Janus package; AutoProcessor is not a valid fallback here. "
+                "In Colab, reinstall Janus from the official GitHub repo and restart the runtime."
+            ) from exc
 
+        try:
             self.vl_chat_processor = VLChatProcessor.from_pretrained(self.model_name_or_path)
-        except Exception:
-            self.vl_chat_processor = AutoProcessor.from_pretrained(self.model_name_or_path, trust_remote_code=True)
+        except Exception as exc:
+            raise RuntimeError(
+                "Failed to initialize Janus VLChatProcessor from the pretrained model. "
+                "This usually means the Colab environment has an incompatible Janus/protobuf/transformers setup. "
+                "Reinstall Janus from the official GitHub repo, then restart the runtime before rerunning generation."
+            ) from exc
+
+        if not hasattr(self.vl_chat_processor, "tokenizer"):
+            raise RuntimeError(
+                f"Loaded processor type {type(self.vl_chat_processor).__name__} does not expose a tokenizer. "
+                "Janus generation expects the official VLChatProcessor."
+            )
+        if not hasattr(self.vl_chat_processor, "apply_sft_template_for_multi_turn_prompts"):
+            raise RuntimeError(
+                f"Loaded processor type {type(self.vl_chat_processor).__name__} does not expose Janus prompt templating methods. "
+                "Janus generation expects the official VLChatProcessor."
+            )
 
         self.tokenizer = self.vl_chat_processor.tokenizer
         load_kwargs: Dict[str, Any] = {"trust_remote_code": True}

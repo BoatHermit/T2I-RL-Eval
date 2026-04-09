@@ -18,7 +18,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--manifest_path", type=str, required=True)
     parser.add_argument("--images_root", type=str, required=True)
     parser.add_argument("--variant", choices=["before", "after"], required=True)
-    parser.add_argument("--judge_model", type=str, default="gpt-4.1-mini")
+    parser.add_argument("--judge_model", type=str, default=None)
     parser.add_argument("--api_provider", type=str, default="openai")
     parser.add_argument("--base_url", type=str, default=None)
     parser.add_argument("--output_path", type=str, required=True)
@@ -28,14 +28,20 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("SILICONFLOW_API_KEY")
-    client = build_openai_client(api_key=api_key, base_url=args.base_url)
+    api_key = (
+        os.environ.get("OPENAI_API_KEY")
+        or os.environ.get("OPENAI_COMPAT_API_KEY")
+        or os.environ.get("SILICONFLOW_API_KEY")
+    )
+    base_url = args.base_url or os.environ.get("OPENAI_BASE_URL") or os.environ.get("OPENAI_API_BASE")
+    judge_model = args.judge_model or os.environ.get("JUDGE_MODEL") or "gpt-4.1-mini"
+    client = build_openai_client(api_key=api_key, base_url=base_url)
     evaluate_manifest(
         manifest_path=Path(args.manifest_path),
         images_root=Path(args.images_root),
         variant=args.variant,
         judge_client=client,
-        judge_model=args.judge_model,
+        judge_model=judge_model,
         output_path=Path(args.output_path),
         resume=args.resume,
     )
