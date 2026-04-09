@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import time
 import types
 from contextlib import nullcontext
 from dataclasses import dataclass, asdict
@@ -329,6 +330,7 @@ def save_generated_sample(
 
 def run() -> None:
     args = parse_args()
+    job_start_time = time.perf_counter()
     torch.manual_seed(args.seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(args.seed)
@@ -336,6 +338,11 @@ def run() -> None:
     output_dir = Path(args.output_dir)
     manifest_path = Path(args.manifest_path)
     samples = load_manifest(args.benchmark, manifest_path, args.limit)
+    print(
+        f"[generate] benchmark={args.benchmark} variant={args.variant} "
+        f"samples={len(samples)} prompt_batch_size={args.prompt_batch_size} "
+        f"dtype={args.dtype} device={args.device or ('cuda' if torch.cuda.is_available() else 'cpu')}"
+    )
     results_path = output_dir / "results" / "generated_samples.jsonl"
     if results_path.exists() and not args.resume:
         results_path.unlink()
@@ -346,12 +353,15 @@ def run() -> None:
         load_in_4bit=args.load_in_4bit,
         load_in_8bit=args.load_in_8bit,
     )
+    print(f"[generate] loading model={args.base_model}")
     generator.load_model()
     if args.variant == "after":
         lora_path = Path(args.lora_path) if args.lora_path else default_lora_path()
+        print(f"[generate] enabling lora={lora_path}")
         generator.enable_lora(str(lora_path))
     else:
         generator.disable_lora()
+        print("[generate] running baseline model without lora")
 
     generation_config = GenerationConfig(
         num_inference_steps=args.num_inference_steps,
@@ -361,16 +371,32 @@ def run() -> None:
         seed=args.seed,
     )
     pending_samples = []
+    skipped_count = 0
     for sample in samples:
         image_path = build_image_path(output_dir, args.benchmark, args.variant, sample["sample_id"])
         if should_skip_sample(image_path, args.resume):
+            skipped_count += 1
             continue
         pending_samples.append(sample)
+    print(
+        f"[generate] pending={len(pending_samples)} skipped={skipped_count} "
+        f"output_dir={output_dir}"
+    )
 
     batch_size = max(1, args.prompt_batch_size)
+    completed_count = 0
     for start_idx in range(0, len(pending_samples), batch_size):
         sample_batch = pending_samples[start_idx : start_idx + batch_size]
         prompts = [sample["prompt"] for sample in sample_batch]
+        batch_start = time.perf_counter()
+        batch_number = start_idx // batch_size + 1
+        total_batches = (len(pending_samples) + batch_size - 1) // batch_size
+        batch_ids = [sample["sample_id"] for sample in sample_batch]
+        print(
+            f"[generate] batch {batch_number}/{total_batches} "
+            f"samples={start_idx + 1}-{start_idx + len(sample_batch)} "
+            f"ids={batch_ids[0]}..{batch_ids[-1]}"
+        )
         images = generator.generate(prompts, generation_config)
         for sample, image in zip(sample_batch, images):
             save_generated_sample(
@@ -383,6 +409,21 @@ def run() -> None:
                 model_name=args.base_model,
                 checkpoint_or_lora=str(args.lora_path or default_lora_path()) if args.variant == "after" else "base",
             )
+            completed_count += 1
+        batch_elapsed = time.perf_counter() - batch_start
+        rate = len(sample_batch) / batch_elapsed if batch_elapsed > 0 else 0.0
+        print(
+            f"[generate] batch {batch_number}/{total_batches} done "
+            f"in {batch_elapsed:.1f}s, rate={rate:.2f} prompts/s, "
+            f"completed={completed_count}/{len(pending_samples)}"
+        )
+
+    total_elapsed = time.perf_counter() - job_start_time
+    print(
+        f"[generate] finished benchmark={args.benchmark} variant={args.variant} "
+        f"generated={completed_count} skipped={skipped_count} "
+        f"elapsed={total_elapsed/60:.1f} min"
+    )
 
 
 if __name__ == "__main__":
