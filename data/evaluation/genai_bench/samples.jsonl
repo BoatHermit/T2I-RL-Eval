@@ -1,0 +1,2 @@
+{"sample_id":"genai-0001","prompt":"two cats on a blue sofa","category":"reasoning","skills":["counting","attribute_binding"],"source":"genai-bench"}
+{"sample_id":"genai-0002","prompt":"a red bicycle to the left of a yellow car","category":"composition","skills":["attribute_binding","spatial"],"source":"genai-bench"}
