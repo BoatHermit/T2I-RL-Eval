@@ -22,6 +22,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.evaluation.benchmarks import GenAIBenchmark, TIFABenchmark
 from src.evaluation.io import append_jsonl
+from src.evaluation.janus_compat import import_janus_vlchatprocessor
 from src.evaluation.schemas import GeneratedSampleRecord
 
 
@@ -92,12 +93,13 @@ class JanusProRunner:
             quantization_config = BitsAndBytesConfig(load_in_8bit=True)
 
         try:
-            from janus.models import VLChatProcessor
+            VLChatProcessor = import_janus_vlchatprocessor()
         except Exception as exc:
             raise RuntimeError(
                 "Failed to import Janus VLChatProcessor. Janus text-to-image generation requires "
                 "the official DeepSeek Janus package; AutoProcessor is not a valid fallback here. "
-                "In Colab, reinstall Janus from the official GitHub repo and restart the runtime."
+                "If the Janus package still fails on Python 3.10+ / newer transformers, reinstall "
+                "Janus from the official DeepSeek GitHub repo and restart the runtime."
             ) from exc
 
         try:
