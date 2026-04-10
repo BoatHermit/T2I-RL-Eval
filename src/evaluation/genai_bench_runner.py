@@ -1,6 +1,5 @@
 import base64
 import concurrent.futures
-import json
 import re
 import time
 from io import BytesIO
@@ -10,6 +9,7 @@ from typing import Any, Dict, List, Optional
 from PIL import Image
 
 from src.evaluation.io import append_jsonl, read_jsonl
+from src.evaluation.judge_utils import request_json_chat_completion
 
 DEFAULT_RUBRIC_DIMENSIONS = [
     "alignment",
@@ -35,16 +35,6 @@ def image_to_data_uri(image: Image.Image) -> str:
     return f"data:image/png;base64,{encoded}"
 
 
-def extract_json_object(text: str) -> Dict[str, Any]:
-    match = re.search(r"\{.*\}", text, re.DOTALL)
-    if not match:
-        return {}
-    try:
-        return json.loads(match.group(0))
-    except json.JSONDecodeError:
-        return {}
-
-
 def build_rubric_prompt(prompt: str, category: str, skills: List[str]) -> str:
     rubric = "\n".join(f'- "{name}": score from 0 to 1' for name in DEFAULT_RUBRIC_DIMENSIONS)
     skills_text = ", ".join(skills) if skills else "none"
@@ -53,9 +43,9 @@ def build_rubric_prompt(prompt: str, category: str, skills: List[str]) -> str:
         f"Prompt: {prompt}\n"
         f"Category: {category}\n"
         f"Skills: {skills_text}\n"
-        "Return JSON only with numeric subscores and a short reason.\n"
+        "Return JSON only with numeric subscores.\n"
         f"Rubric:\n{rubric}\n"
-        'Format: {"alignment": 0.0, "instruction_fidelity": 0.0, "compositionality": 0.0, "visual_quality": 0.0, "reason": "..."}'
+        'Format: {"alignment": 0.0, "instruction_fidelity": 0.0, "compositionality": 0.0, "visual_quality": 0.0}'
     )
 
 
@@ -70,8 +60,9 @@ def build_openai_client(api_key: Optional[str], base_url: Optional[str] = None):
     return OpenAI(**kwargs)
 
 
-def judge_image(client: Any, model: str, image: Image.Image, prompt: str, max_tokens: int = 200) -> str:
-    response = client.chat.completions.create(
+def judge_image(client: Any, model: str, image: Image.Image, prompt: str, max_tokens: int = 96) -> Dict[str, Any]:
+    return request_json_chat_completion(
+        client=client,
         model=model,
         messages=[
             {
@@ -83,8 +74,8 @@ def judge_image(client: Any, model: str, image: Image.Image, prompt: str, max_to
             }
         ],
         max_tokens=max_tokens,
+        max_attempts=3,
     )
-    return response.choices[0].message.content or ""
 
 
 def _coerce_subscores(payload: Dict[str, Any]) -> Dict[str, float]:
@@ -123,8 +114,9 @@ def score_genai_sample(
             raise ValueError("Either image or image_path must be provided")
         image = Image.open(image_path).convert("RGB")
     prompt = build_rubric_prompt(sample["prompt"], sample.get("category", ""), sample.get("skills", []))
-    response_text = judge_image(judge_client, judge_model, image, prompt)
-    payload = extract_json_object(response_text)
+    judge_result = judge_image(judge_client, judge_model, image, prompt)
+    response_text = judge_result["raw_text"]
+    payload = judge_result["parsed_json"]
     subscores = _coerce_subscores(payload)
     return {
         "benchmark": "genai_bench",
@@ -138,6 +130,10 @@ def score_genai_sample(
         "judge_metadata": {
             "judge_model": judge_model,
             "judge_raw": response_text,
+            "judge_finish_reason": judge_result["finish_reason"],
+            "judge_attempts": judge_result["attempts"],
+            "max_tokens": 96,
+            "max_attempts": 3,
         },
     }
 

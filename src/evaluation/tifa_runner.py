@@ -1,6 +1,5 @@
 import base64
 import concurrent.futures
-import json
 import re
 import time
 from io import BytesIO
@@ -10,6 +9,7 @@ from typing import Any, Dict, List, Optional
 from PIL import Image
 
 from src.evaluation.io import append_jsonl, read_jsonl
+from src.evaluation.judge_utils import extract_json_object, request_json_chat_completion
 
 ERROR_BY_QUESTION_TYPE = {
     "object": "missing_object",
@@ -50,25 +50,16 @@ def image_to_data_uri(image: Image.Image) -> str:
     return f"data:image/png;base64,{encoded}"
 
 
-def extract_json_object(text: str) -> Dict[str, Any]:
-    match = re.search(r"\{.*\}", text, re.DOTALL)
-    if not match:
-        return {}
-    try:
-        return json.loads(match.group(0))
-    except json.JSONDecodeError:
-        return {}
-
-
 def build_question_prompt(prompt: str, question: str, expected_answer: str, question_type: str) -> str:
     return (
-        "You are judging whether an image matches a text prompt.\n"
+        "Judge the image against the prompt and answer the question.\n"
         f"Prompt: {prompt}\n"
         f"Question type: {question_type}\n"
         f"Question: {question}\n"
         f"Expected answer: {expected_answer}\n"
-        "Answer with JSON only in the form "
-        '{"answer": "...", "confidence": 0.0, "reason": "..."}'
+        "Return JSON only.\n"
+        'Format: {"answer": "..."}\n'
+        "Use the shortest valid answer possible. Do not include explanation."
     )
 
 
@@ -88,9 +79,10 @@ def judge_question(
     model: str,
     image: Image.Image,
     prompt: str,
-    max_tokens: int = 150,
-) -> str:
-    response = client.chat.completions.create(
+    max_tokens: int = 64,
+) -> Dict[str, Any]:
+    return request_json_chat_completion(
+        client=client,
         model=model,
         messages=[
             {
@@ -102,8 +94,8 @@ def judge_question(
             }
         ],
         max_tokens=max_tokens,
+        max_attempts=3,
     )
-    return response.choices[0].message.content or ""
 
 
 def score_tifa_sample(
@@ -127,8 +119,9 @@ def score_tifa_sample(
             question["expected_answer"],
             question["question_type"],
         )
-        response_text = judge_question(judge_client, judge_model, image, prompt)
-        response_json = extract_json_object(response_text)
+        judge_result = judge_question(judge_client, judge_model, image, prompt)
+        response_text = judge_result["raw_text"]
+        response_json = judge_result["parsed_json"] or extract_json_object(response_text)
         predicted = str(response_json.get("answer", response_text)).strip()
         correct = answers_match(predicted, question["expected_answer"])
         question_results.append(
@@ -140,6 +133,8 @@ def score_tifa_sample(
                 "correct": correct,
                 "judge_raw": response_text,
                 "judge_json": response_json,
+                "judge_finish_reason": judge_result["finish_reason"],
+                "judge_attempts": judge_result["attempts"],
             }
         )
         if not correct:
@@ -158,6 +153,8 @@ def score_tifa_sample(
         "judge_metadata": {
             "judge_model": judge_model,
             "question_count": len(question_results),
+            "max_tokens": 64,
+            "max_attempts": 3,
         },
     }
 
