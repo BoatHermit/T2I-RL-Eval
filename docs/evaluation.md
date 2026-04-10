@@ -42,6 +42,43 @@ CLI flags still take precedence:
 
 ## Commands
 
+Run the whole server workflow:
+
+```bash
+export API_KEY="your-api-key"
+export API_BASE_URL="https://api.openai.com/v1"
+export JUDGE_MODEL="gpt-4.1-mini"
+
+# Optional overrides
+export PROMPT_BATCH_SIZE_BEFORE=4
+export PROMPT_BATCH_SIZE_AFTER=12
+export JUDGE_MAX_WORKERS=2
+export LIMIT=100
+
+bash scripts/run_full_evaluation.sh
+```
+
+`run_full_evaluation.sh` supports the same notebook-style variables for the common knobs:
+
+- `API_KEY`
+- `API_BASE_URL`
+- `JUDGE_MODEL`
+- `JUDGE_MAX_WORKERS`
+- `JUDGE_LOG_EVERY`
+- `BASE_MODEL`
+- `LORA_DIR`
+- `OUTPUT_DIR`
+- `PROMPT_BATCH_SIZE_BEFORE`
+- `PROMPT_BATCH_SIZE_AFTER`
+- `LIMIT`
+- `RESUME`
+
+The server wrapper supports stage toggles:
+
+```bash
+RUN_GENERATE_BEFORE=0 RUN_GENERATE_AFTER=0 RUN_TIFA=1 RUN_GENAI=1 RUN_SUMMARY=1 bash scripts/run_full_evaluation.sh
+```
+
 Generate baseline images with 4 prompts per forward batch:
 
 ```bash
