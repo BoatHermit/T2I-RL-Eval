@@ -22,6 +22,12 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.evaluation.benchmarks import GenAIBenchmark, TIFABenchmark
 from src.evaluation.io import append_jsonl
+from src.evaluation.janus_compat import (
+    build_janus_model_load_kwargs,
+    build_janus_retry_load_kwargs,
+    import_janus_vlchatprocessor,
+    is_meta_tensor_item_error,
+)
 from src.evaluation.schemas import GeneratedSampleRecord
 
 
@@ -92,12 +98,13 @@ class JanusProRunner:
             quantization_config = BitsAndBytesConfig(load_in_8bit=True)
 
         try:
-            from janus.models import VLChatProcessor
+            VLChatProcessor = import_janus_vlchatprocessor()
         except Exception as exc:
             raise RuntimeError(
                 "Failed to import Janus VLChatProcessor. Janus text-to-image generation requires "
                 "the official DeepSeek Janus package; AutoProcessor is not a valid fallback here. "
-                "In Colab, reinstall Janus from the official GitHub repo and restart the runtime."
+                "If the Janus package still fails on Python 3.10+ / newer transformers, reinstall "
+                "Janus from the official DeepSeek GitHub repo and restart the runtime."
             ) from exc
 
         try:
@@ -121,15 +128,21 @@ class JanusProRunner:
             )
 
         self.tokenizer = self.vl_chat_processor.tokenizer
-        load_kwargs: Dict[str, Any] = {"trust_remote_code": True}
-        if quantization_config is not None:
-            load_kwargs["quantization_config"] = quantization_config
-            load_kwargs["torch_dtype"] = torch.float16
-            load_kwargs["device_map"] = "auto"
-        else:
-            load_kwargs["torch_dtype"] = self.dtype
-
-        self.model = AutoModelForCausalLM.from_pretrained(self.model_name_or_path, **load_kwargs)
+        load_kwargs = build_janus_model_load_kwargs(
+            torch_dtype=torch.float16 if quantization_config is not None else self.dtype,
+            quantization_config=quantization_config,
+        )
+        try:
+            self.model = AutoModelForCausalLM.from_pretrained(self.model_name_or_path, **load_kwargs)
+        except RuntimeError as exc:
+            if not is_meta_tensor_item_error(exc):
+                raise
+            retry_kwargs = build_janus_retry_load_kwargs(load_kwargs)
+            print(
+                "[generate] detected Janus meta-tensor init failure; "
+                "retrying model load with low_cpu_mem_usage=False"
+            )
+            self.model = AutoModelForCausalLM.from_pretrained(self.model_name_or_path, **retry_kwargs)
         if quantization_config is None:
             self.model = self.model.to(self.dtype).to(self.device).eval()
         else:
