@@ -45,6 +45,24 @@ def test_patch_mutable_defaults_on_config_class_skips_classes_without_mutable_de
     assert FakeConfig.label == "ok"
 
 
+def test_patch_mutable_defaults_on_config_class_rewrites_other_unhashable_defaults():
+    class MutableValue:
+        __hash__ = None
+
+        def __init__(self, value: int):
+            self.value = value
+
+    shared = MutableValue(7)
+
+    class FakeConfig:
+        payload: MutableValue = shared
+
+    patched = _patch_mutable_defaults_on_config_class(FakeConfig)
+
+    assert patched is True
+    assert isinstance(FakeConfig.payload, dataclasses.Field)
+
+
 def test_patch_missing_post_init_on_model_class_calls_post_init_when_needed():
     class FakeModel:
         def __init__(self, value: int):
