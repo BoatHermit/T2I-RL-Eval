@@ -57,6 +57,77 @@ def should_skip_sample(target_path: Path, resume: bool) -> bool:
     return resume and target_path.exists()
 
 
+def _resolve_device(device: Optional[str]) -> str:
+    return device or ("cuda" if torch.cuda.is_available() else "cpu")
+
+
+def _cuda_device_index(device: str) -> int:
+    if not device.startswith("cuda"):
+        raise ValueError(f"Expected a CUDA device, got {device!r}")
+    parts = device.split(":", 1)
+    if len(parts) == 1 or parts[1] == "":
+        return 0
+    return int(parts[1])
+
+
+def _format_cuda_device_description(device: str) -> str:
+    if not device.startswith("cuda") or not torch.cuda.is_available():
+        return device
+    try:
+        index = _cuda_device_index(device)
+        name = torch.cuda.get_device_name(index)
+        major, minor = torch.cuda.get_device_capability(index)
+        return f"{device} ({name}, sm_{major}{minor})"
+    except Exception:
+        return device
+
+
+def _verify_cuda_runtime(device: str) -> None:
+    if not device.startswith("cuda"):
+        return
+    if not torch.cuda.is_available():
+        raise RuntimeError(f"Requested CUDA device {device}, but torch.cuda.is_available() is False.")
+
+    try:
+        index = _cuda_device_index(device)
+        probe = torch.zeros(1, device=device)
+        probe.add_(1)
+        torch.cuda.synchronize(index)
+    except Exception as exc:
+        if "no kernel image is available for execution on the device" in str(exc):
+            raise RuntimeError(
+                "CUDA runtime probe failed on "
+                f"{_format_cuda_device_description(device)}. "
+                "This usually means the installed PyTorch CUDA wheel was not built with support for "
+                "this GPU architecture. Tesla V100 is compute capability 7.0 (sm_70), while the script "
+                "previously ran on an L4 (sm_89). Reinstall a PyTorch build that includes sm_70 support, "
+                "then rerun. First verify with: "
+                "`python -c \"import torch; print(torch.__version__, torch.version.cuda, "
+                "torch.cuda.get_arch_list(), torch.cuda.get_device_name(0), "
+                "torch.cuda.get_device_capability(0))\"`. "
+                "A practical fix on Linux is: "
+                "`pip install --force-reinstall torch==2.7.1 torchvision==0.22.1 "
+                "torchaudio==2.7.1 --index-url https://download.pytorch.org/whl/cu126`."
+            ) from exc
+        raise RuntimeError(
+            "CUDA runtime probe failed on "
+            f"{_format_cuda_device_description(device)}: {exc}"
+        ) from exc
+
+
+def _verify_dtype_support(device: str, dtype: torch.dtype) -> None:
+    if not device.startswith("cuda") or dtype != torch.bfloat16:
+        return
+    index = _cuda_device_index(device)
+    major, minor = torch.cuda.get_device_capability(index)
+    if (major, minor) < (8, 0):
+        raise RuntimeError(
+            f"Requested dtype={dtype} on {_format_cuda_device_description(device)}, "
+            "but bfloat16 requires Ampere (sm_80) or newer for this workflow. "
+            "Use `--dtype float16` on V100."
+        )
+
+
 class JanusProRunner:
     def __init__(
         self,
@@ -67,7 +138,7 @@ class JanusProRunner:
         load_in_8bit: bool = False,
     ) -> None:
         self.model_name_or_path = model_name_or_path
-        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = _resolve_device(device)
         self.dtype = getattr(torch, dtype)
         self.load_in_4bit = load_in_4bit
         self.load_in_8bit = load_in_8bit
@@ -77,6 +148,8 @@ class JanusProRunner:
         self.image_token_num_per_image = 576
         self.img_size = 384
         self.patch_size = 16
+        _verify_cuda_runtime(self.device)
+        _verify_dtype_support(self.device, self.dtype)
 
     def load_model(self) -> None:
         from transformers import AutoModelForCausalLM, BitsAndBytesConfig

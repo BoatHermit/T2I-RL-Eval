@@ -1,9 +1,18 @@
 from pathlib import Path
 
+import pytest
+import torch
+
 from src.evaluation.benchmarks import GenAIBenchmark, TIFABenchmark
 from src.evaluation.io import read_jsonl, write_jsonl
 from src.evaluation.reporting import compute_variant_delta, count_error_types, write_summary_outputs
-from scripts.generate_benchmark_images import build_image_path, default_lora_path, should_skip_sample
+from scripts.generate_benchmark_images import (
+    _verify_cuda_runtime,
+    _verify_dtype_support,
+    build_image_path,
+    default_lora_path,
+    should_skip_sample,
+)
 
 
 def test_generation_path_uses_variant_and_sample_id(tmp_path: Path):
@@ -119,3 +128,26 @@ def test_requirements_include_api_and_image_dependencies():
     assert "openai" in requirements
     assert "Pillow" in requirements
     assert "torch" in requirements
+
+
+def test_verify_cuda_runtime_surfaces_arch_mismatch(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "get_device_name", lambda index: "Tesla V100-SXM2-32GB")
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda index: (7, 0))
+
+    def _raise_probe(*args, **kwargs):
+        raise RuntimeError("CUDA error: no kernel image is available for execution on the device")
+
+    monkeypatch.setattr(torch, "zeros", _raise_probe)
+
+    with pytest.raises(RuntimeError, match="sm_70 support"):
+        _verify_cuda_runtime("cuda:0")
+
+
+def test_verify_dtype_support_rejects_bfloat16_on_v100(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda index: (7, 0))
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "get_device_name", lambda index: "Tesla V100-SXM2-32GB")
+
+    with pytest.raises(RuntimeError, match="Use `--dtype float16` on V100"):
+        _verify_dtype_support("cuda:0", torch.bfloat16)
