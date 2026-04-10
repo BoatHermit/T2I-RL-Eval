@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+import functools
 from typing import Any
 
 
@@ -22,6 +23,26 @@ def _patch_mutable_defaults_on_config_class(cls: type[Any]) -> bool:
     return patched
 
 
+def _patch_missing_post_init_on_model_class(cls: type[Any]) -> bool:
+    if getattr(cls, "__codex_post_init_patched__", False):
+        return False
+
+    post_init = getattr(cls, "post_init", None)
+    original_init = getattr(cls, "__init__", None)
+    if post_init is None or original_init is None:
+        return False
+
+    @functools.wraps(original_init)
+    def _patched_init(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        if not hasattr(self, "all_tied_weights_keys"):
+            self.post_init()
+
+    cls.__init__ = _patched_init
+    cls.__codex_post_init_patched__ = True
+    return True
+
+
 def import_janus_vlchatprocessor() -> type[Any]:
     from transformers import configuration_utils as transformers_configuration_utils
 
@@ -41,7 +62,8 @@ def import_janus_vlchatprocessor() -> type[Any]:
 
     transformers_configuration_utils.dataclass = _safe_dataclass
     try:
-        from janus.models import VLChatProcessor
+        from janus.models import MultiModalityCausalLM, VLChatProcessor
     finally:
         transformers_configuration_utils.dataclass = original_dataclass
+    _patch_missing_post_init_on_model_class(MultiModalityCausalLM)
     return VLChatProcessor
